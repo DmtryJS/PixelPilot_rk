@@ -441,7 +441,7 @@ void modeset_output_destroy(int fd, struct modeset_output *out)
 	free(out);
 }
 
-struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeConnector *conn, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor)
+struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeConnector *conn, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor, int offset_y)
 {
 	int ret;
 	struct modeset_output *out;
@@ -449,6 +449,7 @@ struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeCon
 	out = malloc(sizeof(*out));
 	memset(out, 0, sizeof(*out));
 	out->video_scale_factor = video_scale_factor;
+	out->offset_y = offset_y;
 	out->connector.id = conn->connector_id;
 
 	if (conn->connection != DRM_MODE_CONNECTED) {
@@ -588,7 +589,7 @@ void *modeset_print_modes(int fd)
 
 }
 
-struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor)
+struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor, int offset_y)
 {
 	drmModeRes *res;
 	drmModeConnector *conn;
@@ -610,7 +611,7 @@ struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mod
 			continue;
 		}
 
-		out = modeset_output_create(fd, res, conn, mode_width, mode_height, mode_vrefresh, video_plane_id, osd_plane_id, video_scale_factor);
+		out = modeset_output_create(fd, res, conn, mode_width, mode_height, mode_vrefresh, video_plane_id, osd_plane_id, video_scale_factor, offset_y);
 		drmModeFreeConnector(conn);
 		if (out) {
 			drmModeFreeResources(res);
@@ -689,7 +690,7 @@ int modeset_atomic_prepare_commit(int fd, struct modeset_output *out, drmModeAto
 	uint32_t crtch = (uint32_t)(orig_crtch * scale_factor);
 
 	int crtcx = (out->video_crtc_width - crtcw) / 2;
-	int crtcy = (out->video_crtc_height - crtch) / 2;
+	int crtcy = (out->video_crtc_height - crtch) / 2 + out->offset_y;
 	if (set_drm_object_property(req, plane, "CRTC_X", crtcx) < 0)
 		return -1;
 	if (set_drm_object_property(req, plane, "CRTC_Y", crtcy) < 0)

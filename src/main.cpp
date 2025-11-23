@@ -683,6 +683,8 @@ void printHelp() {
     "    --video-plane-id       - Override default drm plane used for video by plane-id\n"
 	"\n"
 	"    --video-scale <factor> - Scale video output size (0.5 =< factor <= 1.0) (Default: 1.0)\n"
+	"\n"
+	"    --video-offset-y <pixels> - Vertical offset for video output in pixels (e.g. -50, 100)\n"
     "\n"
     "    --osd-plane-id         - Override default drm plane used for osd by plane-id\n"
     "\n"
@@ -727,6 +729,7 @@ int main(int argc, char **argv)
     pidFile << getpid();
     pidFile.close();
 	float video_scale_factor = 1.0;
+	int video_offset_y = 0; //y offet, pixels
 
 	// Load console arguments
 	__BeginParseConsoleArguments__(printHelp) 
@@ -899,6 +902,11 @@ int main(int argc, char **argv)
     	continue;
 	}
 
+	__OnArgument("--video-offset-y") {
+    	video_offset_y = atoi(__ArgValue);
+    	continue;
+	}
+
 	__EndParseConsoleArguments__
 
 	spdlog::set_level(log_level);
@@ -995,7 +1003,7 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	output_list = modeset_prepare(drm_fd, mode_width, mode_height, mode_vrefresh, video_plane_id_override, osd_plane_id_override, video_scale_factor);
+	output_list = modeset_prepare(drm_fd, mode_width, mode_height, mode_vrefresh, video_plane_id_override, osd_plane_id_override, video_scale_factor, video_offset_y);
 	if (!output_list) {
 		fprintf(stderr,
 				"cannot initialize display. Is display connected? Is --screen-mode correct?\n");
