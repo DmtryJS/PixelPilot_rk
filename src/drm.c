@@ -486,18 +486,19 @@ void modeset_output_destroy(int fd, struct modeset_output *out)
 	}
 	for (int i=0; i<MAX_FRAMES; i++) {
 		modeset_destroy_fb(fd, &out->rotated_bufs[i]);
-	}	
+	}
 	drmModeDestroyPropertyBlob(fd, out->mode_blob_id);
 	free(out);
 }
 
-struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeConnector *conn, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, int rotate)
+struct modeset_output *modeset_output_create(int fd, drmModeRes *res, drmModeConnector *conn, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor, int rotate)
 {
 	int ret;
 	struct modeset_output *out;
 
 	out = malloc(sizeof(*out));
 	memset(out, 0, sizeof(*out));
+	out->video_scale_factor = video_scale_factor;
 	out->connector.id = conn->connector_id;
 	out->rotation = rotate;
 
@@ -638,7 +639,7 @@ void *modeset_print_modes(int fd)
 
 }
 
-struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, int rotate)
+struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mode_height, uint32_t mode_vrefresh, uint32_t video_plane_id, uint32_t osd_plane_id, float video_scale_factor, int rotate)
 {
 	drmModeRes *res;
 	drmModeConnector *conn;
@@ -660,7 +661,7 @@ struct modeset_output *modeset_prepare(int fd, uint16_t mode_width, uint16_t mod
 			continue;
 		}
 
-		out = modeset_output_create(fd, res, conn, mode_width, mode_height, mode_vrefresh, video_plane_id, osd_plane_id, rotate);
+		out = modeset_output_create(fd, res, conn, mode_width, mode_height, mode_vrefresh, video_plane_id, osd_plane_id, video_scale_factor, rotate);
 		drmModeFreeConnector(conn);
 		if (out) {
 			drmModeFreeResources(res);
@@ -728,16 +729,22 @@ int modeset_atomic_prepare_commit(int fd, struct modeset_output *out, drmModeAto
 	if (set_drm_object_property(req, plane, "SRC_H", height << 16) < 0)
 		return -1;
 
-	uint32_t crtcw =  out->video_crtc_width;
-	uint32_t crtch = out->video_crtc_height;
-	float video_ratio = (float)width/height;
-	if (crtcw / video_ratio > crtch) {
-		crtcw = crtch * video_ratio;
-		crtch = crtch;
+	uint32_t orig_crtcw = out->video_crtc_width;
+	uint32_t orig_crtch = out->video_crtc_height;
+	float video_ratio = (float)width / height;
+	if (orig_crtcw / video_ratio > orig_crtch) {
+		orig_crtcw = orig_crtch * video_ratio;
+		orig_crtch = orig_crtch;
 	} else {
-		crtcw = crtcw;
-		crtch = crtcw / video_ratio;
+		orig_crtcw = orig_crtcw;
+		orig_crtch = orig_crtcw / video_ratio;
 	}
+
+
+	float scale_factor = out->video_scale_factor;
+	uint32_t crtcw = (uint32_t)(orig_crtcw * scale_factor);
+	uint32_t crtch = (uint32_t)(orig_crtch * scale_factor);
+
 	int crtcx = (out->video_crtc_width - crtcw) / 2;
 	int crtcy = (out->video_crtc_height - crtch) / 2;
 	if (set_drm_object_property(req, plane, "CRTC_X", crtcx) < 0)

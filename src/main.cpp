@@ -58,9 +58,16 @@ extern "C" {
 #include "os_mon.hpp"
 #include "pixelpilot_config.h"
 #include <iostream>
+#include "WiFiRSSIMonitor.hpp"
+#include "gsmenu/gs_system.h"
+#include "gsmenu/air_actions.h"
+#include "gsmenu/gs_actions.h"
+#include "menu.h"
 
 
 #define READ_BUF_SIZE (1024*1024) // SZ_1M https://github.com/rockchip-linux/mpp/blob/ed377c99a733e2cdbcc457a6aa3f0fcd438a9dff/osal/inc/mpp_common.h#L179
+#define MAX_FRAMES 24		// min 16 and 20+ recommended (mpp/readme.txt)
+
 #define CODEC_ALIGN(x, a)   (((x)+(a)-1)&~((a)-1))
 
 #define DEFAULT_CONFIG_PATH "/etc/pixelpilot.yaml"
@@ -96,6 +103,7 @@ int video_zpos = 1;
 bool mavlink_dvr_on_arm = false;
 bool osd_custom_message = false;
 bool disable_vsync = false;
+bool disable_gregidr = false;
 uint32_t refresh_frequency_ms = 1000;
 
 VideoCodec codec = VideoCodec::H265;
@@ -104,11 +112,17 @@ const char* unix_socket = NULL;
 char* dvr_template = NULL;
 Dvr *dvr = NULL;
 OsSensors os_sensors; // TODO: pass as argument to `main_loop`
-
+MenuAction airactions[MAX_ACTIONS];
+size_t airactions_count;
+MenuAction gsactions[MAX_ACTIONS];
+size_t gsactions_count;
 
 // Add global variables for plane id overrides
 uint32_t video_plane_id_override = 0;
 uint32_t osd_plane_id_override = 0;
+
+WiFiRSSIMonitor wifi_monitor;
+extern enum RXMode RXMODE;
 
 void init_buffer(MppFrame frame) {
 	output_list->video_frm_width = mpp_frame_get_width(frame);
@@ -128,11 +142,11 @@ void init_buffer(MppFrame frame) {
 		output_list->rotated_width = output_list->video_frm_width;
 		output_list->rotated_height = output_list->video_frm_height;
 	}
-    
+
 	output_list->video_fb_x = 0;
 	output_list->video_fb_y = 0;
 	output_list->video_fb_width = output_list->mode.hdisplay;
-	output_list->video_fb_height =output_list->mode.vdisplay;
+	output_list->video_fb_height =output_list->mode.vdisplay;	
 
 	osd_publish_uint_fact("video.width", NULL, 0, output_list->video_frm_width);
 	osd_publish_uint_fact("video.height", NULL, 0, output_list->video_frm_height);
@@ -216,7 +230,7 @@ void init_buffer(MppFrame frame) {
 		memset(offsets, 0, sizeof(offsets));
 		handles[0] = mpi.frame_to_drm[i].handle;
 		offsets[0] = 0;
-		pitches[0] = output_list->hor_stride;						
+		pitches[0] = output_list->hor_stride;
 		handles[1] = mpi.frame_to_drm[i].handle;
 		offsets[1] = pitches[0] * output_list->ver_stride;
 		pitches[1] = pitches[0];
@@ -282,7 +296,7 @@ void init_buffer(MppFrame frame) {
             pitches[1] = pitches[0];
         }
 
-		ret = drmModeAddFB2(drm_fd, buf->width, buf->height, 
+		ret = drmModeAddFB2(drm_fd, buf->width, buf->height,
 						DRM_FORMAT_NV12, handles, pitches, offsets, &buf->rotated_fd, 0);
 		assert(!ret);
 
@@ -400,6 +414,20 @@ void *__FRAME_THREAD__(void *param)
 				init_buffer(frame);
 			} else {
 				// regular frame received
+				idr_notify_decoded_frame();
+				const RK_U32 errinfo = mpp_frame_get_errinfo(frame);
+				const RK_U32 discard = mpp_frame_get_discard(frame);
+				if (errinfo || discard) {
+					const char* reason = "decoder-issue";
+					if (errinfo && discard) {
+						reason = "decoder-errinfo+discard";
+					} else if (errinfo) {
+						reason = "decoder-errinfo";
+					} else if (discard) {
+						reason = "decoder-discard";
+					}
+					idr_request_decoder_issue(reason);
+				}
 				if (!mpi.first_frame_ts.tv_sec) {
 					ts = ats;
 					mpi.first_frame_ts = ats;
@@ -421,6 +449,7 @@ void *__FRAME_THREAD__(void *param)
 					if (output_list->rotation > 0) rotate(i);
 
 					ts = ats;
+					
 					// send DRM FB to display thread
 					ret = pthread_mutex_lock(&video_mutex);
 					assert(!ret);
@@ -698,6 +727,9 @@ void main_loop() {
         // TODO: put gsmenu main loop here
         msg_manager.check_message();
 		os_sensors.run();
+		if (RXMODE == APFPV) {
+    		wifi_monitor.run();
+		}
         sleep(1);
     }
     return;
@@ -715,6 +747,8 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const char *
     auto cb=[&packet,/*&decoder_stalled_count,*/ &bytes_received, &period_start](std::shared_ptr<std::vector<uint8_t>> frame){
         // Let the gst pull thread run at quite high priority
         static bool first= false;
+        static int stall_count = 0;
+        static uint64_t last_stall_idr_ms = 0;
         if(first){
             SchedulingHelper::set_thread_params_max_realtime("DisplayThread",SchedulingHelper::PRIORITY_REALTIME_LOW);
             first= false;
@@ -722,7 +756,17 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const char *
 		bytes_received += frame->size();
 		uint64_t now = get_time_ms();
 		osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
-        feed_packet_to_decoder(packet,frame->data(),frame->size());
+        const bool fed_ok = feed_packet_to_decoder(packet,frame->data(),frame->size());
+        if (!fed_ok) {
+            stall_count++;
+            if (stall_count >= 3 && (now - last_stall_idr_ms) > 500) {
+                last_stall_idr_ms = now;
+                stall_count = 0;
+                idr_request_decoder_issue("decoder-feed-stall");
+            }
+        } else {
+            stall_count = 0;
+        }
         if (dvr_enabled && dvr != NULL) {
 			dvr->frame(frame);
         }
@@ -744,7 +788,7 @@ void read_gstreamerpipe_stream(MppPacket *packet, int gst_udp_port, const char *
 void set_control_verbose(MppApi * mpi,  MppCtx ctx,MpiCmd control,RK_U32 enable){
     RK_U32 res = mpi->control(ctx, control, &enable);
     if(res){
-        spdlog::warn("Could not set control {} {}", control, enable);
+        spdlog::warn("Could not set control {} {}", static_cast<int>(control), enable);
         assert(false);
     }
 }
@@ -834,10 +878,14 @@ void printHelp() {
     "    --screen-rotate <deg>  - Rotate the screen useing RGA, adds ~2.5ms latency, Default: 0, Values: 0,90,180,270\n"
     "\n"
     "    --video-plane-id       - Override default drm plane used for video by plane-id\n"
+	"\n"
+	"    --video-scale <factor> - Scale video output size (0.5 =< factor <= 1.0) (Default: 1.0)\n"
     "\n"
     "    --osd-plane-id         - Override default drm plane used for osd by plane-id\n"
     "\n"
     "    --disable-vsync        - Disable VSYNC commits\n"
+    "\n"
+    "    --disable-gregidr      - Disable last-hop probing and IDR requests\n"
     "\n"
     "    --screen-mode-list     - Print the list of supported screen modes and exit.\n"
     "\n"
@@ -878,6 +926,7 @@ int main(int argc, char **argv)
     std::ofstream pidFile(pidFilePath);
     pidFile << getpid();
     pidFile.close();
+	float video_scale_factor = 1.0;
 
 	// Load console arguments
 	__BeginParseConsoleArguments__(printHelp) 
@@ -1018,6 +1067,11 @@ int main(int argc, char **argv)
 		continue;
 	}
 
+	__OnArgument("--disable-gregidr") {
+		disable_gregidr = true;
+		continue;
+	}
+
 	__OnArgument("--screen-mode-list") {
 		print_modelist = 1;
 		continue;
@@ -1047,9 +1101,19 @@ int main(int argc, char **argv)
 		continue;
 	}
 
+	__OnArgument("--video-scale") {
+    	video_scale_factor = atof(__ArgValue);
+    	if (video_scale_factor < 0.5 || video_scale_factor > 1.0) {
+        	fprintf(stderr, "Invalid video scale factor, should be (0.5 =< scale <= 1.0)\n");
+        	return -1;
+    	}
+    	continue;
+	}
+
 	__EndParseConsoleArguments__
 
 	spdlog::set_level(log_level);
+	idr_set_enabled(!disable_gregidr);
 
 	if (dvr_template != NULL && video_framerate < 0 ) {
 		printf("--dvr-framerate must be provided when dvr is enabled.\n");
@@ -1072,6 +1136,52 @@ int main(int argc, char **argv)
             if (config["gsmenu"]["enabled"]) {
                 gsmenu_enabled = config["gsmenu"]["enabled"].as<bool>();
             }
+		if (gsmenu_enabled && config["gsmenu"]["actions"]) {
+			if (config["gsmenu"]["actions"]["air"]) {
+				const YAML::Node& actionsNode = config["gsmenu"]["actions"]["air"];
+				airactions_count = 0;
+
+				for (YAML::const_iterator it = actionsNode.begin();
+					it != actionsNode.end() && airactions_count < MAX_ACTIONS;
+					++it) {
+
+					std::string label = (*it)["label"].as<std::string>();
+					std::string cmd = (*it)["action"].as<std::string>();
+
+					// Access the global array at the current index
+					strncpy(airactions[airactions_count].label, label.c_str(), MAX_LABEL_LEN - 1);
+					airactions[airactions_count].label[MAX_LABEL_LEN - 1] = '\0';
+
+					strncpy(airactions[airactions_count].action, cmd.c_str(), MAX_ACTION_LEN - 1);
+					airactions[airactions_count].action[MAX_ACTION_LEN - 1] = '\0';
+
+					airactions_count++;
+				}
+				spdlog::debug("Parsed {} GS Actions", airactions_count);
+			}
+			if (config["gsmenu"]["actions"]["ground"]) {
+				const YAML::Node& actionsNode = config["gsmenu"]["actions"]["ground"];
+				gsactions_count = 0;
+
+				for (YAML::const_iterator it = actionsNode.begin();
+					it != actionsNode.end() && gsactions_count < MAX_ACTIONS;
+					++it) {
+
+					std::string label = (*it)["label"].as<std::string>();
+					std::string cmd = (*it)["action"].as<std::string>();
+
+					// Access the global array at the current index
+					strncpy(gsactions[gsactions_count].label, label.c_str(), MAX_LABEL_LEN - 1);
+					gsactions[gsactions_count].label[MAX_LABEL_LEN - 1] = '\0';
+
+					strncpy(gsactions[gsactions_count].action, cmd.c_str(), MAX_ACTION_LEN - 1);
+					gsactions[gsactions_count].action[MAX_ACTION_LEN - 1] = '\0';
+
+					gsactions_count++;
+				}
+				spdlog::debug("Parsed {} GS Actions", gsactions_count);
+			}
+		}
 		}
 
 		if (config["os_sensors"] && config["os_sensors"].IsMap()) {
@@ -1143,7 +1253,7 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	output_list = modeset_prepare(drm_fd, mode_width, mode_height, mode_vrefresh, video_plane_id_override, osd_plane_id_override, rotate);
+	output_list = modeset_prepare(drm_fd, mode_width, mode_height, mode_vrefresh, video_plane_id_override, osd_plane_id_override, video_scale_factor, rotate);
 	if (!output_list) {
 		fprintf(stderr,
 				"cannot initialize display. Is display connected? Is --screen-mode correct?\n");

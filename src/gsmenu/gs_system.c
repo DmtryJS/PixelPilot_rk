@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../main.h"
+#include "../gstrtpreceiver.h"
 #include "gs_system.h"
 #include "lvgl/lvgl.h"
 #include "helper.h"
@@ -8,12 +10,21 @@
 #include "styles.h"
 
 extern lv_group_t * default_group;
+enum RXMode RXMODE = WFB;
 
+lv_obj_t * rx_codec;
+lv_obj_t * rx_mode;
 lv_obj_t * gs_rendering;
+lv_obj_t * connector;
 lv_obj_t * resolution;
 lv_obj_t * rec_enabled;
 lv_obj_t * rec_fps;
 lv_obj_t * vsync_disabled;
+lv_obj_t * gs_request_idr;
+lv_obj_t * video_scale;
+
+extern lv_obj_t * ap_fpv_ssid;
+extern lv_obj_t * ap_fpv_password;
 
 typedef struct Dvr* Dvr; // Forward declaration
 void dvr_start_recording(Dvr* dvr);
@@ -25,16 +36,23 @@ extern bool disable_vsync;
 
 void gs_system_page_load_callback(lv_obj_t * page)
 {
+
+    reload_dropdown_value(page,rx_codec);
     reload_switch_value(page,gs_rendering);
+    reload_dropdown_value(page,rx_mode);
+    RXMODE = lv_dropdown_get_selected(lv_obj_get_child_by_type(rx_mode,0,&lv_dropdown_class));
+    reload_dropdown_value(page,connector);
     reload_dropdown_value(page,resolution);
     reload_dropdown_value(page,rec_fps);
-
+    reload_slider_value(page, video_scale);
     if (dvr_enabled) lv_obj_add_state(lv_obj_get_child_by_type(rec_enabled,0,&lv_switch_class), LV_STATE_CHECKED);
     else lv_obj_clear_state(lv_obj_get_child_by_type(rec_enabled,0,&lv_switch_class), LV_STATE_CHECKED);
 
     if (disable_vsync) lv_obj_add_state(lv_obj_get_child_by_type(vsync_disabled,0,&lv_switch_class), LV_STATE_CHECKED);
     else lv_obj_clear_state(lv_obj_get_child_by_type(vsync_disabled,0,&lv_switch_class), LV_STATE_CHECKED);
 
+    if (idr_get_enabled()) lv_obj_add_state(lv_obj_get_child_by_type(gs_request_idr,0,&lv_switch_class), LV_STATE_CHECKED);
+    else lv_obj_clear_state(lv_obj_get_child_by_type(gs_request_idr,0,&lv_switch_class), LV_STATE_CHECKED);
 }
 
 void toggle_rec_enabled()
@@ -74,6 +92,14 @@ void disable_vsync_cb(lv_event_t *e) {
     }
 }
 
+void gs_request_idr_cb(lv_event_t *e) {
+    lv_event_code_t event = lv_event_get_code(e);
+    if (event == LV_EVENT_VALUE_CHANGED) {
+        lv_obj_t *ta = lv_event_get_target(e);
+        idr_set_enabled(lv_obj_has_state(ta, LV_STATE_CHECKED));
+    }
+}
+
 void rec_fps_cb(lv_event_t *e) {
     lv_event_code_t event = lv_event_get_code(e);
     if (event == LV_EVENT_VALUE_CHANGED) {
@@ -86,6 +112,15 @@ void rec_fps_cb(lv_event_t *e) {
 #else
         printf("dvr_set_video_framerate(dvr,%i);\n",fps);
 #endif
+    }
+}
+
+void rx_mode_cb(lv_event_t *e) {
+    lv_event_code_t event = lv_event_get_code(e);
+    if (event == LV_EVENT_VALUE_CHANGED) {
+        lv_obj_t *ta = lv_event_get_target(e);
+        RXMODE = lv_dropdown_get_selected(ta);
+        gsmenu_toggle_rxmode();
     }
 }
 
@@ -110,10 +145,24 @@ void create_gs_system_menu(lv_obj_t * parent) {
     cont = lv_menu_cont_create(section);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);    
 
+    rx_codec = create_dropdown(cont,LV_SYMBOL_SETTINGS, "Codec","","rx_codec",menu_page_data,false);
+    rx_mode = create_dropdown(cont,LV_SYMBOL_SETTINGS, "RX Mode","","rx_mode",menu_page_data,false);
+    lv_obj_add_event_cb(lv_obj_get_child_by_type(rx_mode,0,&lv_dropdown_class), rx_mode_cb, LV_EVENT_VALUE_CHANGED,NULL);
+    thread_data_t* data = lv_obj_get_user_data(lv_obj_get_child_by_type(rx_mode,0,&lv_dropdown_class));
+    data->arguments[0] = lv_obj_get_child_by_type(ap_fpv_ssid,0,&lv_textarea_class);
+    data->arguments[1] = lv_obj_get_child_by_type(ap_fpv_password,0,&lv_textarea_class);
+    reload_dropdown_value(parent,rx_mode);
+    RXMODE = lv_dropdown_get_selected(lv_obj_get_child_by_type(rx_mode,0,&lv_dropdown_class));
+
     gs_rendering = create_switch(cont,LV_SYMBOL_SETTINGS,"GS Rendering","gs_rendering", menu_page_data,false);
+    connector = create_dropdown(cont,LV_SYMBOL_SETTINGS, "Connector","","connector",menu_page_data,false);
     resolution = create_dropdown(cont,LV_SYMBOL_SETTINGS, "Resolution","","resolution",menu_page_data,false);
+    video_scale = create_slider(cont, LV_SYMBOL_SETTINGS, "Video scale factor", "video_scale", menu_page_data, false, 2);
+
     vsync_disabled = create_switch(cont,LV_SYMBOL_SETTINGS,"Disable VSYNC","disable_vsync", NULL,false);
     lv_obj_add_event_cb(lv_obj_get_child_by_type(vsync_disabled,0,&lv_switch_class), disable_vsync_cb, LV_EVENT_VALUE_CHANGED,NULL);
+    gs_request_idr = create_switch(cont,LV_SYMBOL_SETTINGS,"Request IDR","gs_request_idr", NULL,false);
+    lv_obj_add_event_cb(lv_obj_get_child_by_type(gs_request_idr,0,&lv_switch_class), gs_request_idr_cb, LV_EVENT_VALUE_CHANGED,NULL);
 
     create_text(parent, NULL, "Recording", NULL, NULL, false, LV_MENU_ITEM_BUILDER_VARIANT_1);
     section = lv_menu_section_create(parent);
