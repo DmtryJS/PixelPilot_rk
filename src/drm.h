@@ -23,7 +23,7 @@
 #include <pthread.h>
 #include <rockchip/rk_mpi.h>
 #include <rga/rga.h>
-#include "RgaUtils.h"
+#include <rga/RgaUtils.h>
 #include <rga/im2d.h>
 #include <assert.h>
 #include "main.h"
