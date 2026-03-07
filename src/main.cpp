@@ -32,9 +32,9 @@
 #include <drm_fourcc.h>
 #include <linux/videodev2.h>
 #include <rockchip/rk_mpi.h>
-#include "rga.h"
+#include <rga/rga.h>
 #include "RgaUtils.h"
-#include "im2d.hpp"
+#include <rga/im2d.h>
 #include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
 #include "spdlog/spdlog.h"

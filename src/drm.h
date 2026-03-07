@@ -22,9 +22,9 @@
 #include <drm_fourcc.h>
 #include <pthread.h>
 #include <rockchip/rk_mpi.h>
-#include "rga.h"
+#include <rga/rga.h>
 #include "RgaUtils.h"
-#include "im2d.h"
+#include <rga/im2d.h>
 #include <assert.h>
 #include "main.h"
 

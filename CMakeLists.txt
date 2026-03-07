@@ -178,6 +178,9 @@ else()
   pkg_check_modules(LIBGPIOD REQUIRED libgpiod)
   include_directories(${LIBGPIOD_INCLUDE_DIR})
 
+  find_path(RGA_INCLUDE_DIRS NAMES rga.h rga/rga.h)
+  find_library(RGA_LIBRARIES NAMES rga librga)
+
   # GStreamer setup
   find_package(PkgConfig REQUIRED)
   pkg_search_module(GST REQUIRED
@@ -196,11 +199,11 @@ else()
       ${PROJECT_SOURCE_DIR}
       ${PROJECT_SOURCE_DIR}/lvgl
       ${LIBDRM_INCLUDE_DIRS}
+      ${RGA_INCLUDE_DIRS}
   )
 
   target_link_libraries(${PROJECT_NAME}
       rockchip_mpp
-      rga
       pthread
       drm
       m
@@ -217,6 +220,7 @@ else()
       PkgConfig::gstreamer-app
       PkgConfig::gstnet
       PkgConfig::gio
+      ${RGA_LIBRARIES}
   )
 endif()
 
@@ -232,7 +236,7 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
   )
 endif()
 
-target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_BINARY_DIR}" "/usr/include/rga")
+target_include_directories(${PROJECT_NAME} PUBLIC "${PROJECT_BINARY_DIR}")
 
 # Testing
 if(BUILD_TESTS)
@@ -264,7 +268,7 @@ if(BUILD_TESTS)
     pkg_search_module(gstreamer-app REQUIRED IMPORTED_TARGET gstreamer-app-1.0>=1.4)
     pkg_search_module(gstnet REQUIRED IMPORTED_TARGET gstreamer-net-1.0>=1.4)
     pkg_search_module(gio REQUIRED IMPORTED_TARGET gio-2.0)
-    target_link_libraries(pixelpilot_tests PkgConfig::gstreamer PkgConfig::gstreamer-app PkgConfig::gstnet PkgConfig::gio)
+    target_link_libraries(pixelpilot_tests PkgConfig::gstreamer PkgConfig::gstreamer-app PkgConfig::gstnet PkgConfig::gio ${RGA_LIBRARIES})
 
     target_link_options(pixelpilot_tests
       BEFORE PUBLIC -fsanitize=undefined PUBLIC -fsanitize=address
