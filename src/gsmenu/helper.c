@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <pthread.h>
+#include <signal.h>
 #include <math.h>
 #include "../../lvgl/lvgl.h"
 #include "gs_system.h"
@@ -9,15 +10,17 @@
 #include "ui.h"
 #include "executor.h"
 #include "../WiFiRSSIMonitor.h"
+#include "../menu.h"
 
 extern enum RXMode RXMODE;
+
+static void update_dropdown_width(lv_obj_t * dropdown);
 
 extern gsmenu_control_mode_t control_mode;
 extern lv_obj_t * menu;
 extern lv_indev_t * indev_drv;
 extern lv_obj_t * sub_gs_main_page;
 
-extern lv_obj_t * air_presets_cont;
 extern lv_obj_t * air_wfbng_cont;
 extern lv_obj_t * air_alink_cont;
 extern lv_obj_t * air_aalink_cont;
@@ -162,7 +165,6 @@ void generic_back_event_handler(lv_event_t * e) {
     lv_key_t key = lv_event_get_key(e);
     if (key == LV_KEY_HOME) {
         lv_menu_set_page(menu,NULL);
-        lv_obj_remove_state(air_presets_cont, LV_STATE_CHECKED);
         lv_obj_remove_state(air_wfbng_cont, LV_STATE_CHECKED);
         lv_obj_remove_state(air_alink_cont, LV_STATE_CHECKED);
         lv_obj_remove_state(air_aalink_cont, LV_STATE_CHECKED);
@@ -351,8 +353,6 @@ lv_obj_t * create_slider(lv_obj_t * parent, const char * icon, const char * txt,
 
     lv_obj_add_event_cb(slider, generic_slider_event_cb, LV_EVENT_CLICKED,data);
     lv_obj_add_event_cb(slider, generic_back_event_handler, LV_EVENT_KEY,NULL);
-
-    get_slider_value(obj);
 
     return obj;
 }
@@ -546,7 +546,7 @@ lv_obj_t * create_dropdown(lv_obj_t * parent, const char * icon, const char * la
     lv_obj_add_event_cb(dd, generic_back_event_handler, LV_EVENT_KEY,NULL);
     lv_obj_add_event_cb(dd, on_focus, LV_EVENT_FOCUSED, NULL);
 
-    get_dropdown_value(obj);
+    lv_dropdown_set_options(dd,"Loading ...");
 
     return obj;
 }
@@ -699,7 +699,7 @@ char* get_paramater(lv_obj_t * page, char * param) {
     strcat(final_command,menu_page_data->type);
     strcat(final_command," ");
     strcat(final_command,menu_page_data->page);
-    strcat(final_command," "); 
+    strcat(final_command," ");
     strcat(final_command,param);
     char * result = run_command(final_command);
     size_t len = strlen(result);
@@ -707,6 +707,22 @@ char* get_paramater(lv_obj_t * page, char * param) {
         result[len - 1] = '\0';
     }
     return result;
+}
+
+// Split gsmenu.sh output at \x1e separator (in-place).
+// Returns the value part, sets *values_out to the allowed-values part (or NULL).
+char* split_value_and_options(char* raw, char** values_out) {
+    *values_out = NULL;
+    if (!raw) return raw;
+    char* sep = strchr(raw, '\x1e');
+    if (sep) {
+        *sep = '\0';
+        *values_out = sep + 1;
+    }
+    // strip trailing newline from value part
+    size_t len = strlen(raw);
+    if (len > 0 && raw[len - 1] == '\n') raw[len - 1] = '\0';
+    return raw;
 }
 
 
@@ -745,8 +761,16 @@ void reload_dropdown_value(lv_obj_t * page,lv_obj_t * parameter) {
     lv_obj_t * obj = lv_obj_get_child_by_type(parameter,0,&lv_dropdown_class);
     if ( !lv_obj_has_state(obj, LV_STATE_DISABLED) && ! lv_obj_has_flag(parameter,LV_OBJ_FLAG_HIDDEN)) {
         thread_data_t * param_user_data = (thread_data_t*) lv_obj_get_user_data(obj);
-        char * value = get_paramater(page, param_user_data->parameter);
+        char * raw = get_paramater(page, param_user_data->parameter);
+        char * values_str = NULL;
+        char * value = split_value_and_options(raw, &values_str);
         lv_lock();
+        if (values_str) {
+            lv_dropdown_set_options(obj, values_str);
+            update_dropdown_width(obj);
+            if (lv_dropdown_get_option_cnt(obj) == 1)
+                lv_obj_add_flag(lv_obj_get_parent(obj), LV_OBJ_FLAG_HIDDEN);
+        }
         lv_dropdown_set_selected(obj,lv_dropdown_get_option_index(obj,value));
         lv_unlock();
     }
@@ -779,13 +803,28 @@ void reload_slider_value(lv_obj_t * page,lv_obj_t * parameter) {
     lv_obj_t * label = lv_obj_get_child_by_type(parameter,1,&lv_label_class);
     if ( !lv_obj_has_state(obj, LV_STATE_DISABLED) && ! lv_obj_has_flag(parameter,LV_OBJ_FLAG_HIDDEN)) {
         thread_data_t * param_user_data  = (thread_data_t*) lv_obj_get_user_data(obj);
-        char * value = get_paramater(page,param_user_data->parameter);
+        char * raw = get_paramater(page,param_user_data->parameter);
+        char * values_str = NULL;
+        char * value = split_value_and_options(raw, &values_str);
+
+        // Set range if allowed values provided
+        if (values_str) {
+            float min, max;
+            if (sscanf(values_str, "%f %f", &min, &max) == 2) {
+                int32_t scaled_min = (int32_t)(min * powf(10, param_user_data->precision));
+                int32_t scaled_max = (int32_t)(max * powf(10, param_user_data->precision));
+                lv_lock();
+                lv_slider_set_range(obj, scaled_min, scaled_max);
+                lv_unlock();
+            }
+        }
+
+        // Set current value
         float current_value;
         if (sscanf(value, "%f", &current_value) != 1) {
             return;
         }
         int32_t scaled_value = (int32_t)(current_value * powf(10, param_user_data->precision));
-        // Create a buffer for the float value display
         char format[16];
         snprintf(format, sizeof(format), "%%.%df", param_user_data->precision);
         char s[32];
@@ -797,34 +836,7 @@ void reload_slider_value(lv_obj_t * page,lv_obj_t * parameter) {
     }
 }
 
-char* get_values(thread_data_t * data) {
-    menu_page_data_t* menu_page_data = data->menu_page_data;
-    char final_command[200] = "gsmenu.sh values ";
-    strcat(final_command,menu_page_data->type);
-    strcat(final_command," ");
-    strcat(final_command,menu_page_data->page);
-    strcat(final_command," "); 
-    strcat(final_command,data->parameter);
-    return run_command(final_command);
-}
-
-void get_slider_value(lv_obj_t * parent) {
-    lv_obj_t * obj = lv_obj_get_child_by_type(parent,0,&lv_slider_class);
-    thread_data_t * param_user_data  = (thread_data_t*) lv_obj_get_user_data(obj);
-    char * value_line = get_values(param_user_data);
-    float min, max;
-    if (sscanf(value_line, "%f %f", &min, &max) != 2) {
-        return;
-    }
-    
-    // Scale the min/max values by the precision
-    int32_t scaled_min = (int32_t)(min * powf(10, param_user_data->precision));
-    int32_t scaled_max = (int32_t)(max * powf(10, param_user_data->precision));
-    lv_slider_set_range(obj, scaled_min, scaled_max);
-}
-
-
-void update_dropdown_width(lv_obj_t * dropdown) {
+static void update_dropdown_width(lv_obj_t * dropdown) {
     const char * options = lv_dropdown_get_options(dropdown);
     uint16_t option_cnt = lv_dropdown_get_option_cnt(dropdown);
     
@@ -855,13 +867,6 @@ void update_dropdown_width(lv_obj_t * dropdown) {
                  20; // Extra space for the arrow
     
     lv_obj_set_width(dropdown, max_width);
-}
-
-void get_dropdown_value(lv_obj_t * parent) {
-    lv_obj_t * obj = lv_obj_get_child_by_type(parent,0,&lv_dropdown_class);
-    thread_data_t * param_user_data  = (thread_data_t*) lv_obj_get_user_data(obj);
-    lv_dropdown_set_options(obj,get_values(param_user_data));
-    update_dropdown_width(obj);
 }
 
 bool file_exists(const char *path) {
@@ -945,6 +950,63 @@ void gsmenu_toggle_rxmode() {
     }
 }
 
+typedef struct {
+    lv_obj_t   *mbox;
+    lv_group_t *prev_group;
+    lv_group_t *prev_default_group;
+    lv_group_t *dialog_group;
+} restart_dialog_ctx_t;
+
+static void restart_dialog_btn_cb(lv_event_t *e) {
+    restart_dialog_ctx_t *ctx = (restart_dialog_ctx_t *)lv_event_get_user_data(e);
+    lv_obj_t *btn = lv_event_get_target(e);
+
+    bool is_yes = (lv_obj_get_index(btn) == 0);
+
+    lv_group_set_default(ctx->prev_default_group);
+    lv_indev_set_group(indev_drv, ctx->prev_group);
+    lv_group_delete(ctx->dialog_group);
+    lv_msgbox_close(ctx->mbox);
+    free(ctx);
+
+    if (is_yes)
+        raise(SIGHUP);
+}
+
+void show_restart_notice(void) {
+    lv_group_t *prev_group         = lv_indev_get_group(indev_drv);
+    lv_group_t *prev_default_group = lv_group_get_default();
+    lv_group_t *dialog_group       = lv_group_create();
+    lv_group_set_default(dialog_group);
+
+    lv_obj_t *top  = lv_layer_top();
+    lv_obj_t *mbox = lv_msgbox_create(top);
+    lv_obj_t *backdrop = lv_obj_get_child_by_type(top, 0, &lv_msgbox_backdrop_class);
+    if (backdrop)
+        lv_obj_swap(backdrop, mbox);
+
+    lv_msgbox_add_title(mbox, LV_SYMBOL_WARNING " Restart required");
+    lv_msgbox_add_text(mbox, "A restart is required to apply the new resolution.\nRestart now?");
+    lv_obj_t *yes_btn = lv_msgbox_add_footer_button(mbox, LV_SYMBOL_OK " Yes");
+    lv_obj_t *no_btn  = lv_msgbox_add_footer_button(mbox, LV_SYMBOL_CLOSE " No");
+
+    lv_obj_add_style(yes_btn, &style_openipc, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_add_style(yes_btn, &style_openipc_outline, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
+    lv_obj_add_style(no_btn,  &style_openipc, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_add_style(no_btn,  &style_openipc_outline, LV_PART_MAIN | LV_STATE_FOCUS_KEY);
+
+    restart_dialog_ctx_t *ctx = malloc(sizeof(restart_dialog_ctx_t));
+    ctx->mbox               = mbox;
+    ctx->prev_group         = prev_group;
+    ctx->prev_default_group = prev_default_group;
+    ctx->dialog_group       = dialog_group;
+
+    lv_indev_set_group(indev_drv, dialog_group);
+
+    lv_obj_add_event_cb(yes_btn, restart_dialog_btn_cb, LV_EVENT_CLICKED, ctx);
+    lv_obj_add_event_cb(no_btn,  restart_dialog_btn_cb, LV_EVENT_CLICKED, ctx);
+}
+
 void add_entry_to_menu_page(menu_page_data_t *menu_page_data, const char* text, lv_obj_t* obj, ReloadFunc reload_func) {
     // Increase entry count
     menu_page_data->entry_count++;
@@ -1007,4 +1069,10 @@ void delete_menu_page_entry_by_obj(menu_page_data_t *menu_page_data, lv_obj_t* o
         free(menu_page_data->page_entries);
         menu_page_data->page_entries = NULL;
     }
+}
+
+void custom_actions_cb(lv_event_t * event)
+{   
+    MenuAction *action = lv_event_get_user_data(event);
+    run_command_and_block(event, action->action, NULL);
 }

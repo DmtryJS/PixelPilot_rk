@@ -30,7 +30,17 @@ gsmenu:
     # right: 32
     # up: 16
     # down: 18
-
+  # Define custom actions here
+  # action is the command the button will trigger
+  # actions:
+  #   air:
+  #     - label: Custom Action 1
+  #       action: sleep 5
+  #     - label: Custom Action 1
+  #       action: sleep 5
+  #   ground:
+  #     - label: Custom Action 1
+  #       action: sleep 5
 # enables collection of `os_mon.*` OSD facts
 os_sensors:
   cpu: true      # Monitor CPU load percentage
@@ -49,3 +59,9 @@ os_sensors:
 #   cpu: auto
 #   power: auto
 #   temperature: auto
+
+# Phone restream target IP (optional)
+# manual_ip: permanently pins this IP in the "Stream To" dropdown so it is
+#   always visible as an option, even when auto-discovery finds no clients.
+# restream:
+#   manual_ip: 192.168.1.100

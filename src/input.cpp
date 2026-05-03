@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <termios.h>
@@ -19,10 +20,6 @@ extern lv_group_t *main_group;
 extern lv_indev_t * indev_drv;
 
 
-struct Dvr;
-void dvr_start_recording(Dvr* dvr);
-void dvr_stop_recording(Dvr* dvr);
-extern Dvr *dvr;
 extern int dvr_enabled;
 
 #ifdef USE_SIMULATOR
@@ -537,9 +534,7 @@ void handle_keyboard_input(void) {
 #endif
             case 'q':
             case 'Q':
-                printf("Exiting...\n");
-                restore_stdin();
-                exit(0);
+                raise(SIGINT);
                 break;
         }
     }

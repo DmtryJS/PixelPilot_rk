@@ -7,7 +7,11 @@
 #define FPVUE_GSTRTPRECEIVER_H
 
 #include <stdint.h>
+#ifndef USE_SIMULATOR
 #include <gst/gst.h>
+#endif
+#include <stdbool.h>
+#ifdef __cplusplus
 #include <thread>
 #include <memory>
 #include <vector>
@@ -50,7 +54,7 @@ public:
     typedef std::function<void(std::shared_ptr<std::vector<uint8_t>> frame)> NEW_FRAME_CALLBACK;
     void start_receiving(NEW_FRAME_CALLBACK cb);
     void stop_receiving();
-    void switch_to_file_playback(const char* file_path);
+    VideoCodec switch_to_file_playback(const char* file_path);
     void switch_to_stream();
     void fast_forward(double rate = 2.0);
     void fast_rewind(double rate = 2.0);
@@ -67,6 +71,7 @@ private:
     GstElement * m_gst_pipeline=nullptr;
     NEW_FRAME_CALLBACK m_cb;
     VideoCodec m_video_codec;
+    VideoCodec m_playback_codec = VideoCodec::UNKNOWN;
     int m_port;
     // appsink
     GstElement *m_app_sink_element = nullptr;
@@ -74,7 +79,7 @@ private:
     std::unique_ptr<std::thread> m_pull_samples_thread=nullptr;
     // appsrc
     const char* unix_socket = nullptr;
-    int sock;
+    int sock = -1;
     bool m_read_socket_run = false;
     std::unique_ptr<std::thread> m_read_socket_thread;
 
@@ -84,6 +89,25 @@ private:
     bool m_is_paused = false;
     double m_pre_pause_rate = 1.0;
 };
+#endif
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void idr_set_enabled(bool enabled);
+bool idr_get_enabled();
+void restream_set_enabled(bool enabled);
+bool restream_get_enabled();
+void restream_scan_clients(char* buf, size_t buf_len);
+void restream_set_manual_ip(const char* ip);
+const char* restream_get_manual_ip();
+void restream_set_pinned_ip(const char* ip);
+void idr_request_record_start();
+void idr_request_decoder_issue(const char* reason);
+void idr_notify_decoded_frame();
+#ifdef __cplusplus
+}
+#endif
 
 #endif //FPVUE_GSTRTPRECEIVER_H

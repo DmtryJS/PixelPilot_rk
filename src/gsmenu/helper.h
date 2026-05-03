@@ -40,19 +40,20 @@ lv_obj_t * create_spinbox(lv_obj_t * parent, const char * icon, const char * txt
 lv_obj_t * find_first_focusable_obj(lv_obj_t * parent);
 void handle_sub_page_load(lv_event_t *e);
 char* get_paramater(lv_obj_t * page, char * param);
+char* split_value_and_options(char* raw, char** values_out);
 void reload_label_value(lv_obj_t * page,lv_obj_t * parameter);
 void reload_switch_value(lv_obj_t * page,lv_obj_t * parameter);
 void reload_dropdown_value(lv_obj_t * page,lv_obj_t * parameter);
 void reload_checkbox_value(lv_obj_t * page,lv_obj_t * parameter);
 void reload_textarea_value(lv_obj_t * page,lv_obj_t * parameter);
 void reload_slider_value(lv_obj_t * page,lv_obj_t * parameter);
-void get_slider_value(lv_obj_t * parent);
-void get_dropdown_value(lv_obj_t * parent);
 void generic_back_event_handler(lv_event_t * e);
 
 const char* find_resource_file(const char* relative_path);
 
 void gsmenu_toggle_rxmode();
+void show_restart_notice(void);
 
 void add_entry_to_menu_page(menu_page_data_t *menu_page_data, const char* text, lv_obj_t* obj, ReloadFunc reload_func);
 void delete_menu_page_entry_by_obj(menu_page_data_t *menu_page_data, lv_obj_t* obj);
+void custom_actions_cb(lv_event_t * event);

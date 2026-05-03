@@ -21,13 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Cache debian
         id: cache-debian
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .apt_cache
@@ -47,7 +47,7 @@ jobs:
           sudo rm -r .apt_cache/archives/{lock,partial}
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.debian_codename }}-bin
           path: |
@@ -63,13 +63,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Cache debian
         id: cache-debian
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .apt_cache
@@ -91,12 +91,77 @@ jobs:
           sudo rm -r .apt_cache/archives/{lock,partial}
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.debian_codename }}-deb
           path: |
             ${{ matrix.debian_codename }}_pixelpilot-rk_*_arm64.deb
             ${{ matrix.debian_codename }}_pixelpilot-rk-dbgsym_*_arm64.deb
+
+  build_sbc:
+    name: Build for sbc-groundstations (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - runcam_wifilink
+          - emax_wyvern-link
+          - openipc_bonnet
+          - radxa_zero3
+    steps:
+      - name: Checkout PixelPilot_rk
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          path: PixelPilot_rk
+
+      - name: Checkout sbc-groundstations
+        uses: actions/checkout@v6
+        with:
+          repository: OpenIPC/sbc-groundstations
+          path: sbc-groundstations
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cpio rsync bc qemu-user-static binfmt-support
+
+      - name: Prepare workspace
+        run: |
+          sudo mkdir -p /mnt/workspace
+          sudo chown $USER:$USER /mnt/workspace
+          rsync -a sbc-groundstations/ /mnt/workspace/
+          echo "CACHE_DATE=$(date +%m)" >> $GITHUB_ENV
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/ccache
+          key: ${{ matrix.platform }}-ccache-${{ env.CACHE_DATE }}
+          restore-keys: |
+            ${{ matrix.platform }}-ccache-
+
+      - name: Build
+        working-directory: /mnt/workspace
+        run: |
+          set -x
+          mkdir -p /tmp/ccache
+
+          export PIXELPILOT_OVERRIDE_SRCDIR=$GITHUB_WORKSPACE/PixelPilot_rk
+          export BR2_CCACHE_DIR=/tmp/ccache
+          DEFCONFIG=${{ matrix.platform }}_defconfig bash build.sh pixelpilot-rebuild
+
+      - name: Extract pixelpilot binary
+        run: |
+          cp /mnt/workspace/output/${{ matrix.platform }}_defconfig/target/usr/bin/pixelpilot \
+            sbc_${{ matrix.platform }}_pixelpilot
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: sbc-${{ matrix.platform }}-bin
+          path: sbc_${{ matrix.platform }}_pixelpilot
 
   test:
     name: Test (${{ matrix.debian_codename }})
@@ -107,13 +172,13 @@ jobs:
           - bookworm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Cache debian
         id: cache-debian
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .apt_cache
@@ -136,12 +201,13 @@ jobs:
     needs:
       - build
       - build_deb
+      - build_sbc
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download Binaries
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           run-id: ${{ github.run_id }}  # Download all artifacts
           merge-multiple: true
@@ -157,6 +223,7 @@ jobs:
             bookworm_pixelpilot
             bookworm_pixelpilot-rk_*_arm64.deb
             bookworm_pixelpilot-rk-dbgsym_*_arm64.deb
+            sbc_*_pixelpilot
             config_osd.json
             pixelpilot.yaml
             gsmenu.sh
@@ -173,6 +240,7 @@ jobs:
             bookworm_pixelpilot
             bookworm_pixelpilot-rk_*_arm64.deb
             bookworm_pixelpilot-rk-dbgsym_*_arm64.deb
+            sbc_*_pixelpilot
             config_osd.json
             pixelpilot.yaml
             gsmenu.sh
